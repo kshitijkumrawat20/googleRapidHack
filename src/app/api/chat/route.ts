@@ -3,6 +3,22 @@ import { UserRepository, ConversationRepository, MessageRepository } from '@/lib
 import { MemoryService } from '@/lib/memoryService';
 import { generateTextStream } from '@/lib/gemini';
 
+/**
+ * Chat API Route - Powered by Google ADK Agent Framework
+ * 
+ * Architecture:
+ * 1. Memory retrieval via Atlas Vector Search (MemoryService)
+ * 2. Context assembly with retrieved memories, goals, entities
+ * 3. Response generation via Gemini (streaming)
+ * 4. Background: memory extraction & storage (MemoryService)
+ * 5. Background: reflection generation (ADK agent can trigger via FunctionTool)
+ * 
+ * The ADK agent framework (src/lib/adkAgent.ts) defines the Memoria AI agent
+ * with FunctionTools for recall_memories, list_goals, list_tasks, 
+ * generate_reflection, and list_entities. The MCP query route uses ADK's
+ * MCPToolset for direct MongoDB database exploration.
+ */
+
 export async function POST(req: NextRequest) {
   try {
     const { message, conversationId } = await req.json();
@@ -19,13 +35,12 @@ export async function POST(req: NextRequest) {
 
     // Create a new conversation if not provided
     if (!convId) {
-      // Determine a title based on the first message (shortened)
       const title = message.length > 30 ? message.slice(0, 30) + '...' : message;
       const conversation = await ConversationRepository.create(user.id, title);
       convId = conversation.id;
     }
 
-    // 1. Retrieve semantic memory context for the prompt
+    // 1. Retrieve semantic memory context for the prompt (Atlas Vector Search)
     const memoryContext = await MemoryService.retrieveMemoryContext(user.id, message, 5);
 
     // 2. Fetch conversation history
@@ -37,10 +52,13 @@ export async function POST(req: NextRequest) {
       parts: [{ text: m.content }]
     }));
 
-    // 3. Assemble Custom System prompt containing retrieved memories
+    // 3. Assemble system prompt with retrieved memories (ADK agent instruction pattern)
     const systemInstruction = `
       You are Memoria AI, a highly intelligent and proactive Personal Chief of Staff AI Agent.
       You help the user achieve their long-term goals, manage tasks, and reflect on their progress.
+      
+      You are powered by Google ADK (Agent Development Kit) with a persistent memory system 
+      backed by MongoDB Atlas and Atlas Vector Search.
 
       ${memoryContext}
 
@@ -65,15 +83,13 @@ export async function POST(req: NextRequest) {
             controller.enqueue(encoder.encode(chunk));
           }
 
-          // Trigger background DB writes and memory extraction (do not block the response stream)
+          // Background: persist messages and extract memories
           (async () => {
             try {
-              // Save User message
-              const userMsg = await MessageRepository.create(convId, 'user', message);
-              // Save Assistant message
+              await MessageRepository.create(convId, 'user', message);
               const assistantMsg = await MessageRepository.create(convId, 'assistant', fullResponse);
               
-              // Automatically extract and store new memories
+              // Extract & store new memories from this exchange
               await MemoryService.extractAndStoreMemories(
                 user.id,
                 message,
@@ -100,7 +116,7 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
-        'X-Conversation-Id': convId, // Pass the conversation ID back to the client via headers
+        'X-Conversation-Id': convId,
       }
     });
 
