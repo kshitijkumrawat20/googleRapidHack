@@ -102,9 +102,15 @@ export async function POST(req: NextRequest) {
             }
           })();
 
-        } catch (err) {
+        } catch (err: any) {
           console.error('[Streaming API Error]:', err);
-          controller.error(err);
+          // Send a friendly error message to the client instead of crashing the stream
+          const errorMsg = err?.status === 429
+            ? '⚠️ The Gemini API quota has been exceeded. Please check your API key credits at https://ai.studio/projects or try again later.'
+            : err?.code === 'UND_ERR_CONNECT_TIMEOUT' || err?.cause?.code === 'UND_ERR_CONNECT_TIMEOUT'
+              ? '⚠️ Could not connect to the Gemini API. Please check your network connection and try again.'
+              : `⚠️ An error occurred while generating a response. Please try again. (${err?.message || 'Unknown error'})`;
+          controller.enqueue(encoder.encode(errorMsg));
         } finally {
           controller.close();
         }
