@@ -78,8 +78,12 @@ export function initMcpServer(): Promise<void> {
       mcpProcess = null;
     });
 
-    // Execute handshakes
-    (async () => {
+    // Execute handshake after a delay to allow npx to download/start the MCP server
+    // On first run, npx needs ~10-20s to install mongodb-mcp-server
+    const handshakeDelay = 8000; // Wait 8 seconds before sending initialize
+    console.log(`[MCP Client] Waiting ${handshakeDelay/1000}s for MCP subprocess to start...`);
+    
+    setTimeout(async () => {
       try {
         // 1. Send initialize request
         console.log('[MCP Client] Sending initialize handshake...');
@@ -90,7 +94,7 @@ export function initMcpServer(): Promise<void> {
             name: 'memoria-ai-nextjs-client',
             version: '1.0.0',
           },
-        });
+        }, 45000); // 45 second timeout for init
 
         // 2. Send initialized notification
         sendNotification('notifications/initialized');
@@ -102,11 +106,11 @@ export function initMcpServer(): Promise<void> {
         mcpProcess = null;
         reject(err);
       }
-    })();
+    }, handshakeDelay);
   });
 }
 
-function sendRequest(method: string, params: any = {}): Promise<any> {
+function sendRequest(method: string, params: any = {}, timeoutMs: number = 30000): Promise<any> {
   return new Promise((resolve, reject) => {
     if (!mcpProcess || !mcpProcess.stdin) {
       return reject(new Error('MCP Server is not running. Call initMcpServer() first.'));
@@ -114,11 +118,11 @@ function sendRequest(method: string, params: any = {}): Promise<any> {
 
     const id = messageIdCounter++;
 
-    // 15-second timeout to prevent hanging forever
+    // Configurable timeout to prevent hanging forever
     const timeout = setTimeout(() => {
       pendingRequests.delete(id);
-      reject(new Error(`MCP request "${method}" (id=${id}) timed out after 15000ms`));
-    }, 15000);
+      reject(new Error(`MCP request "${method}" (id=${id}) timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
 
     pendingRequests.set(id, {
       resolve: (val: any) => {

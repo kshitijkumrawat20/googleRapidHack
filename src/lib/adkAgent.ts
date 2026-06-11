@@ -225,6 +225,12 @@ export function createMemoriaAgent(): LlmAgent {
       generateReflectionTool,
       listEntitiesTool,
     ],
+    generateContentConfig: {
+      thinkingConfig: {
+        thinkingBudget: 0,
+      },
+    },
+
   });
 }
 
@@ -245,7 +251,6 @@ function getRunner(): InMemoryRunner {
   }
   return runnerInstance;
 }
-
 /**
  * Run the ADK agent with a user message and return the response text + events.
  * Uses runEphemeral for a fresh session each call (we manage history in MongoDB).
@@ -265,11 +270,29 @@ export async function runAgent(
   })) {
     events.push(event);
 
-    // Use toStructuredEvents to properly extract content
+    // Try structured events first
     const structured = toStructuredEvents(event);
     for (const se of structured) {
       if (se.type === EventType.CONTENT) {
         responseText += se.content;
+      }
+    }
+
+    // Fallback for gemini-2.5-flash thinking mode: 
+    // text may be in parts not captured by toStructuredEvents
+    if (isFinalResponse(event) && !responseText) {
+      // Try stringifyContent
+      const text = stringifyContent(event);
+      if (text) {
+        responseText = text;
+      }
+      // Last resort: scan all parts for text (including thought parts)
+      if (!responseText && event.content?.parts) {
+        for (const part of event.content.parts as any[]) {
+          if (part.text && event.author !== 'user') {
+            responseText += part.text;
+          }
+        }
       }
     }
   }
@@ -371,6 +394,12 @@ The database contains these collections: users, conversations, messages, memorie
 Always default the database parameter to "memoria_ai" unless the user specifies otherwise.
 Present results in a clear, organized format.`,
     tools: [mcpToolset],
+    generateContentConfig: {
+      thinkingConfig: {
+        thinkingBudget: 0,
+      },
+    },
+
   });
 
   return {
