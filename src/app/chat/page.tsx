@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { 
   Brain, 
   Target, 
@@ -51,6 +52,8 @@ interface DBStats {
 }
 
 export default function ChatPage() {
+  const router = useRouter();
+  
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -60,13 +63,74 @@ export default function ChatPage() {
   const [lastSearchQuery, setLastSearchQuery] = useState('');
   const [retrievedContext, setRetrievedContext] = useState<any[]>([]);
   
+  // Settings Modal states
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [dbUriInput, setDbUriInput] = useState('');
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; hasCustomDb: boolean } | null>(null);
+  
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Load conversations and DB status on mount
+  // Authentication check on mount
   useEffect(() => {
-    fetchConversations();
-    fetchDbStatus();
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) {
+          router.push('/login');
+          return;
+        }
+        const data = await res.json();
+        setCurrentUser(data.user);
+
+        // Fetch initial data once authenticated
+        fetchConversations();
+        fetchDbStatus();
+      } catch (err) {
+        console.error('Auth check error:', err);
+        router.push('/login');
+      }
+    };
+    checkAuth();
   }, []);
+
+  const handleSaveDbSettings = async (uri: string) => {
+    try {
+      const res = await fetch('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customDbUri: uri }),
+      });
+      
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update database configuration.');
+      }
+
+      setCurrentUser(prev => prev ? { ...prev, hasCustomDb: data.user.hasCustomDb } : null);
+
+      // Reset conversation states for the new database context
+      setCurrentConversationId(null);
+      setMessages([]);
+      setLastSearchQuery('');
+      setRetrievedContext([]);
+      
+      // Fetch fresh data from the new DB
+      fetchConversations();
+      fetchDbStatus();
+    } catch (err: any) {
+      console.error('Failed to update DB settings:', err);
+      alert(err.message || 'Failed to save database configuration.');
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      router.push('/login');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  };
 
   // Fetch messages when conversation changes
   useEffect(() => {
@@ -330,6 +394,13 @@ export default function ChatPage() {
 
         {/* Sidebar Footer Navigation */}
         <div className="p-4 border-t border-[#1e1e24] flex flex-col gap-2.5 bg-[#09090b]/50">
+          {currentUser && (
+            <div className="flex flex-col gap-1 px-3.5 py-2 border-b border-[#1e1e24] mb-1">
+              <span className="text-[10px] text-zinc-500 font-semibold uppercase tracking-wider">Logged In As</span>
+              <span className="text-xs text-zinc-300 font-bold truncate leading-none">{currentUser.name}</span>
+              <span className="text-[10px] text-zinc-500 truncate leading-none mt-1">{currentUser.email}</span>
+            </div>
+          )}
           <Link 
             href="/dashboard"
             className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-indigo-950/20 border border-indigo-500/20 hover:bg-indigo-950/40 text-indigo-300 font-medium text-xs transition-all duration-200"
@@ -337,6 +408,20 @@ export default function ChatPage() {
             <LayoutDashboard className="h-4 w-4 shrink-0 text-indigo-400" />
             Go to Admin Dashboard
           </Link>
+          <button 
+            onClick={() => setIsSettingsOpen(true)}
+            className="flex items-center gap-3 px-3.5 py-2 hover:bg-zinc-900 rounded-xl text-zinc-400 hover:text-zinc-200 text-xs text-left transition-all duration-200"
+          >
+            <Settings className="h-4 w-4 text-zinc-500" />
+            Database Settings
+          </button>
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-3 px-3.5 py-2 hover:bg-red-950/15 hover:text-red-400 rounded-xl text-xs text-left transition-all duration-200"
+          >
+            <ArrowLeft className="h-4 w-4 text-zinc-500 hover:text-red-400" />
+            Log Out Session
+          </button>
           <Link 
             href="/"
             className="flex items-center gap-3 px-3.5 py-2 hover:bg-zinc-900 rounded-xl text-zinc-400 hover:text-zinc-200 text-xs transition-all duration-200"
@@ -558,6 +643,83 @@ export default function ChatPage() {
         </footer>
 
       </main>
+
+      {/* 3. SETTINGS MODAL */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-800 bg-[#0c0c0e] p-6 text-[#fafafa] shadow-2xl flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <Database className="h-5 w-5 text-indigo-400" />
+                <h3 className="font-bold text-sm tracking-tight text-white">Database Settings</h3>
+              </div>
+              <button 
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-zinc-500 hover:text-white text-xs font-semibold"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <h4 className="text-xs font-semibold text-zinc-300">Bring Your Own Database (BYODB)</h4>
+              <p className="text-[11px] text-zinc-400 leading-relaxed">
+                Connect Memoria AI directly to your own MongoDB Atlas cluster! By storing data on your cluster, you maintain 100% data ownership, zero storage limits, and can query or export your AI's memory bank using MongoDB Compass directly.
+              </p>
+
+              <div className="p-3 rounded-xl bg-indigo-500/5 border border-indigo-500/10 flex flex-col gap-2 bg-[#0d0d12]">
+                <h5 className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Merits & Advantages</h5>
+                <ul className="text-[10px] text-zinc-300 list-disc list-inside space-y-1 leading-normal">
+                  <li><strong>Data Privacy</strong>: Conversations and memories reside completely inside your private cluster.</li>
+                  <li><strong>Unlimited Memory</strong>: Scale your AI's memory bank infinitely on your own free-tier or paid cluster.</li>
+                  <li><strong>Direct Access</strong>: Connect via MongoDB Compass or charts to run custom queries or export records.</li>
+                  <li><strong>Stateless Security</strong>: Connection string remains in your browser's local storage and is never stored on our servers.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label htmlFor="db-uri-input" className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+                MongoDB Atlas Connection String
+              </label>
+              <textarea
+                id="db-uri-input"
+                value={dbUriInput}
+                onChange={(e) => setDbUriInput(e.target.value)}
+                placeholder="mongodb+srv://<user>:<password>@cluster.mongodb.net/memoria_ai"
+                rows={2}
+                className="w-full rounded-xl bg-[#121215] border border-[#1f1f26] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-xs text-zinc-200 placeholder-zinc-600 p-3 resize-none leading-relaxed focus:outline-none transition-all duration-200"
+              />
+              <span className="text-[9px] text-zinc-600">
+                Note: Standard <code>mongodb+srv://</code> connection URIs are supported. Leave empty to use the default shared demonstration cluster.
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3 pt-3 border-t border-zinc-800">
+              <button
+                onClick={() => {
+                  handleSaveDbSettings(dbUriInput);
+                  setIsSettingsOpen(false);
+                  confetti({ particleCount: 50, spread: 30 });
+                }}
+                className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors shadow-lg shadow-indigo-600/10"
+              >
+                Save Connection Settings
+              </button>
+              <button
+                onClick={() => {
+                  setDbUriInput('');
+                  handleSaveDbSettings('');
+                  setIsSettingsOpen(false);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 hover:text-white transition-colors text-xs font-semibold"
+              >
+                Reset to Default
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

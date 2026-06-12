@@ -23,6 +23,27 @@ function mapDocument<T extends { _id?: ObjectId | string }>(doc: T | null): any 
 
 export const UserRepository = {
   async getOrCreateDefaultUser(): Promise<User> {
+    // 1. Try to fetch user from authenticated session cookie first
+    try {
+      const { cookies } = await import('next/headers');
+      const cookieStore = await cookies();
+      const sessionCookie = cookieStore.get('memoria_session');
+      if (sessionCookie?.value) {
+        const { verifySession } = await import('./auth-utils');
+        const session = verifySession(sessionCookie.value);
+        if (session && session.userId) {
+          const conn = await connectToDatabase();
+          const doc = await conn.db.collection('users').findOne({ _id: toMongoId(session.userId) });
+          if (doc) {
+            return mapDocument(doc);
+          }
+        }
+      }
+    } catch {
+      // Headers/cookies unavailable or session invalid
+    }
+
+    // 2. Fallback to default developer profile
     const conn = await connectToDatabase();
     const defaultUser = {
       name: 'Hackathon Developer',
@@ -38,6 +59,26 @@ export const UserRepository = {
       });
       doc = await collection.findOne({ _id: result.insertedId });
     }
+    return mapDocument(doc);
+  },
+
+  async getByEmail(email: string): Promise<User | null> {
+    const conn = await connectToDatabase();
+    const doc = await conn.db.collection('users').findOne({ email: email.toLowerCase().trim() });
+    return mapDocument(doc);
+  },
+
+  async create(user: { name: string; email: string; password?: string; customDbUri?: string }): Promise<User> {
+    const conn = await connectToDatabase();
+    const collection = conn.db.collection('users');
+    const result = await collection.insertOne({
+      name: user.name,
+      email: user.email.toLowerCase().trim(),
+      password: user.password,
+      customDbUri: user.customDbUri,
+      createdAt: new Date()
+    });
+    const doc = await collection.findOne({ _id: result.insertedId });
     return mapDocument(doc);
   }
 };

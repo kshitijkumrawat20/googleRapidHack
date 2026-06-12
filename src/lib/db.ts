@@ -1,11 +1,17 @@
 import { MongoClient, Db } from 'mongodb';
 import dns from 'dns';
 import { Resolver } from 'dns';
+import { headers, cookies } from 'next/headers';
+import { verifySession, decrypt } from './auth-utils';
 
 const MONGODB_DB = process.env.MONGODB_DB || 'memoria_ai';
 
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
+// Cache connections per connection string
+interface CachedConnection {
+  client: MongoClient;
+  db: Db;
+}
+const cachedConnections = new Map<string, CachedConnection>();
 
 export interface DbConnection {
   db: Db;
@@ -87,8 +93,86 @@ async function resolveAtlasSrv(srvUri: string): Promise<string> {
   return standardUri;
 }
 
+/**
+ * Automatically create the Atlas Vector Search index on the Memories collection
+ * if it is not already present. Failsafe to allow in-database cosine calculation if unsupported.
+ */
+async function createSearchIndexIfMissing(db: Db): Promise<void> {
+  const collection = db.collection('memories');
+  try {
+    const existing = await collection.listSearchIndexes().toArray();
+    if (existing.some(i => i.name === 'vector_index')) {
+      console.log('✅ [DB Setup] Atlas Vector Search index "vector_index" already exists.');
+      return;
+    }
+  } catch (err) {
+    // Ignore error if search index API is unsupported on this cluster
+  }
+
+  console.log('🔨 [DB Setup] Creating Atlas Vector Search index "vector_index" dynamically...');
+  const indexDefinition = {
+    name: 'vector_index',
+    type: 'vectorSearch',
+    definition: {
+      fields: [
+        {
+          type: 'vector',
+          path: 'embedding',
+          numDimensions: 768,
+          similarity: 'cosine'
+        },
+        {
+          type: 'filter',
+          path: 'userId'
+        },
+        {
+          type: 'filter',
+          path: 'category'
+        }
+      ]
+    }
+  };
+
+  try {
+    await collection.createSearchIndex(indexDefinition);
+    console.log('✅ [DB Setup] Dynamic Atlas Vector Search index created successfully.');
+  } catch (err: any) {
+    console.warn(`⚠️ [DB Setup] Auto-creation of search index failed: ${err.message}.`);
+  }
+}
+
 export async function connectToDatabase(): Promise<DbConnection> {
-  const MONGODB_URI = process.env.MONGODB_URI || '';
+  let customUri: string | null = null;
+  
+  // 1. Try reading the dynamic header first (useful for testing scripts / CLI)
+  try {
+    const requestHeaders = await headers();
+    customUri = requestHeaders.get('x-mongodb-uri');
+  } catch {
+    // Headers are not available outside request context
+  }
+
+  // 2. Try reading the secure HTTP-only session cookie
+  if (!customUri) {
+    try {
+      const cookieStore = await cookies();
+      const sessionCookie = cookieStore.get('memoria_session');
+      if (sessionCookie?.value) {
+        const session = verifySession(sessionCookie.value);
+        if (session && session.customDbUri) {
+          customUri = decrypt(session.customDbUri);
+        }
+      }
+    } catch {
+      // Cookies are not available outside request context (e.g. build time, instrumentation)
+    }
+  }
+
+  if (customUri) {
+    console.log('🔌 Dynamic DB routing: connecting to user-specified cluster.');
+  }
+
+  const MONGODB_URI = customUri || process.env.MONGODB_URI || '';
 
   if (!MONGODB_URI) {
     throw new Error(
@@ -96,16 +180,27 @@ export async function connectToDatabase(): Promise<DbConnection> {
     );
   }
 
+  // Extract database name from connection string path if present
+  let dbName = MONGODB_DB;
+  try {
+    const match = MONGODB_URI.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?]+)/);
+    if (match && match[1]) {
+      dbName = match[1];
+    }
+  } catch {
+    // Fallback to MONGODB_DB
+  }
+
   // Return cached connection if available and alive
-  if (cachedClient && cachedDb) {
+  if (cachedConnections.has(MONGODB_URI)) {
+    const cached = cachedConnections.get(MONGODB_URI)!;
     try {
       // Quick ping to verify the cached connection is still alive
-      await cachedDb.command({ ping: 1 });
-      return { db: cachedDb, isFallback: false, dbName: MONGODB_DB };
+      await cached.db.command({ ping: 1 });
+      return { db: cached.db, isFallback: false, dbName };
     } catch {
       console.warn('⚠️ Cached connection stale, reconnecting...');
-      cachedClient = null;
-      cachedDb = null;
+      cachedConnections.delete(MONGODB_URI);
     }
   }
 
@@ -131,15 +226,22 @@ export async function connectToDatabase(): Promise<DbConnection> {
       });
 
       await client.connect();
+      const db = client.db(dbName);
 
-      cachedClient = client;
-      cachedDb = client.db(MONGODB_DB);
+      // Cache the connection
+      cachedConnections.set(MONGODB_URI, { client, db });
 
       console.log(
         '✅ Successfully connected to MongoDB Atlas database:',
-        MONGODB_DB
+        dbName
       );
-      return { db: cachedDb, isFallback: false, dbName: MONGODB_DB };
+
+      // Attempt search index creation in background
+      createSearchIndexIfMissing(db).catch((e) => {
+        console.warn('Index build background task failed:', e.message);
+      });
+
+      return { db, isFallback: false, dbName };
     } catch (err) {
       lastError = err;
       console.warn(

@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
       response: responseText || 'Agent completed but no response text generated.',
       toolsUsed,
       eventCount: events.length,
+      events,
       agentFramework: 'Google ADK (Agent Development Kit)',
     });
 

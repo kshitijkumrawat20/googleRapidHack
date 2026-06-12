@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { 
   Brain, 
   Target, 
@@ -21,7 +22,8 @@ import {
   BookOpen,
   Info,
   Terminal,
-  Play
+  Play,
+  Settings
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -112,7 +114,9 @@ interface DBStats {
 }
 
 export default function DashboardPage() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'memories' | 'goals' | 'tasks' | 'reflections' | 'graph' | 'embeddings' | 'resources'>('overview');
+  const router = useRouter();
+
+  const [activeTab, setActiveTab] = useState<'overview' | 'memories' | 'goals' | 'tasks' | 'reflections' | 'graph' | 'embeddings' | 'resources' | 'settings'>('overview');
   const [dbStats, setDbStats] = useState<DBStats | null>(null);
   
   // Data lists
@@ -148,9 +152,51 @@ export default function DashboardPage() {
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpError, setMcpError] = useState('');
 
+  // Settings states
+  const [dbUriInput, setDbUriInput] = useState('');
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; hasCustomDb: boolean } | null>(null);
+
   useEffect(() => {
-    loadAllData();
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) {
+          router.push('/login');
+          return;
+        }
+        const data = await res.json();
+        setCurrentUser(data.user);
+        
+        loadAllData();
+      } catch (err) {
+        console.error('Auth check error:', err);
+        router.push('/login');
+      }
+    };
+    checkAuth();
   }, []);
+
+  const handleSaveDbSettings = async (uri: string) => {
+    try {
+      const res = await fetch('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customDbUri: uri }),
+      });
+      
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update database configuration.');
+      }
+
+      setCurrentUser(prev => prev ? { ...prev, hasCustomDb: data.user.hasCustomDb } : null);
+      // Reload dashboard statistics and lists for the new database
+      loadAllData();
+    } catch (err: any) {
+      console.error('Failed to update DB settings:', err);
+      alert(err.message || 'Failed to save database configuration.');
+    }
+  };
 
   const loadAllData = async () => {
     fetchStats();
@@ -491,6 +537,12 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-4">
+            {currentUser && (
+              <div className="hidden md:flex flex-col items-end gap-0.5 mr-2">
+                <span className="text-[10px] text-zinc-300 font-bold leading-none">{currentUser.name}</span>
+                <span className="text-[9px] text-zinc-500 leading-none">{currentUser.email}</span>
+              </div>
+            )}
             <button 
               onClick={loadAllData}
               className="p-2 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-900 transition-colors"
@@ -504,6 +556,15 @@ export default function DashboardPage() {
                 MongoDB Atlas Connected
               </span>
             )}
+            <button
+              onClick={async () => {
+                await fetch('/api/auth/logout', { method: 'POST' });
+                router.push('/login');
+              }}
+              className="px-2.5 py-1.5 rounded-lg border border-red-950/20 hover:border-red-500/20 bg-red-500/5 text-red-400 text-xs font-semibold hover:bg-red-500/10 transition-all duration-200"
+            >
+              Log Out
+            </button>
           </div>
         </div>
       </header>
@@ -525,6 +586,7 @@ export default function DashboardPage() {
             { id: 'tasks', title: 'Action Checklist', icon: CheckSquare },
             { id: 'reflections', title: 'Behavioral Insights', icon: Sparkles },
             { id: 'resources', title: 'MongoDB & MCP Hub', icon: HelpCircle },
+            { id: 'settings', title: 'Database Config', icon: Settings },
           ].map(t => {
             const Icon = t.icon;
             return (
@@ -1400,6 +1462,104 @@ export default function DashboardPage() {
                 </div>
               </div>
 
+            </div>
+          )}
+
+          {/* TAB 9: SETTINGS */}
+          {activeTab === 'settings' && (
+            <div className="space-y-6 max-w-2xl animate-in fade-in duration-200">
+              <div className="border-b border-zinc-900 pb-3">
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                  Database Configuration
+                </h3>
+                <p className="text-xs text-zinc-500 mt-1">
+                  Onboard your own private MongoDB cluster and keep complete control over your memories and goals.
+                </p>
+              </div>
+
+              <div className="p-5 rounded-2xl border border-zinc-900 bg-zinc-900/10 space-y-4">
+                <h4 className="text-xs font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+                  <Database className="h-4.5 w-4.5 text-indigo-400" />
+                  Bring Your Own Database (BYODB) Settings
+                </h4>
+
+                <p className="text-xs text-zinc-400 leading-relaxed font-medium">
+                  By connecting Memoria AI to your own cluster, the Next.js API automatically routes all collections (memories, goals, tasks, reflections, entities, and relationships) to your own database. Your connection URI is stored strictly inside your browser's local storage and is never persisted on our servers.
+                </p>
+
+                <div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/10 flex flex-col gap-2 bg-[#0d0d12]">
+                  <h5 className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Key Advantages</h5>
+                  <ul className="text-[10px] text-zinc-300 list-disc list-inside space-y-1.5 leading-normal">
+                    <li><strong>Data Privacy & Sovereignty</strong>: Full compliance and control of your private details.</li>
+                    <li><strong>Infinite Storage</strong>: Scale infinitely without shared storage limits.</li>
+                    <li><strong>Direct Inspection</strong>: Connect with MongoDB Compass to explore the knowledge graph.</li>
+                    <li><strong>Stateless Security</strong>: Pure header-based connection context.</li>
+                  </ul>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="dashboard-db-uri" className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">
+                    MongoDB Atlas Connection URI
+                  </label>
+                  <textarea
+                    id="dashboard-db-uri"
+                    value={dbUriInput}
+                    onChange={(e) => setDbUriInput(e.target.value)}
+                    placeholder="mongodb+srv://<username>:<password>@cluster.mongodb.net/memoria_ai"
+                    rows={3}
+                    className="w-full rounded-xl bg-[#09090b] border border-[#1f1f26] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-xs text-zinc-200 placeholder-zinc-600 p-3.5 resize-none leading-relaxed focus:outline-none transition-all duration-200"
+                  />
+                  <span className="text-[9px] text-zinc-500 leading-normal">
+                    Format: <code>mongodb+srv://&lt;username&gt;:&lt;password&gt;@&lt;cluster-host&gt;/&lt;dbname&gt;</code>. Leave empty to use the default shared demonstration database.
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    onClick={() => {
+                      handleSaveDbSettings(dbUriInput);
+                      confetti({ particleCount: 50, spread: 30 });
+                    }}
+                    className="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-colors shadow-lg shadow-indigo-600/10"
+                  >
+                    Save Connection
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDbUriInput('');
+                      handleSaveDbSettings('');
+                    }}
+                    className="px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-850 hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors text-xs font-semibold"
+                  >
+                    Reset to Default
+                  </button>
+                </div>
+              </div>
+
+              {/* Vector Search Index Instructions */}
+              <div className="p-5 rounded-2xl border border-zinc-900 bg-zinc-950/40 space-y-3">
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <Binary className="h-4.5 w-4.5 text-blue-400" />
+                  Atlas Vector Search Index Configuration
+                </h4>
+                <p className="text-xs text-zinc-400 leading-relaxed font-medium">
+                  When bringing a new MongoDB cluster, the application will automatically try to create the vector search index named <code>vector_index</code>. If your cluster tier does not support automated index creation via the driver, you can create it manually:
+                </p>
+                <div className="p-4 rounded-xl bg-zinc-900/60 font-mono text-[10px] text-zinc-300 border border-zinc-900 space-y-2 overflow-x-auto">
+                  <p>1. Go to Atlas &gt; Database &gt; Search Indexes &gt; Create Search Index</p>
+                  <p>2. Select "Atlas Vector Search" (JSON Editor)</p>
+                  <p>3. Set index name to: <strong className="text-indigo-400">vector_index</strong></p>
+                  <p>4. Database: <strong>[your_db]</strong>, Collection: <strong>memories</strong></p>
+                  <p>5. Paste this index definition:</p>
+                  <pre className="text-zinc-400 font-semibold">{JSON.stringify({
+                    fields: [
+                      { type: "vector", path: "embedding", numDimensions: 768, similarity: "cosine" },
+                      { type: "filter", path: "userId" },
+                      { type: "filter", path: "category" }
+                    ]
+                  }, null, 2)}</pre>
+                </div>
+              </div>
             </div>
           )}
 

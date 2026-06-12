@@ -359,6 +359,17 @@ export async function createMcpExplorerAgent(): Promise<{
   // Dynamic import to avoid loading MCP deps on every page
   const { MCPToolset } = await import('@google/adk');
 
+  let customUri: string | null = null;
+  try {
+    const { headers } = await import('next/headers');
+    const requestHeaders = await headers();
+    customUri = requestHeaders.get('x-mongodb-uri');
+  } catch (e) {
+    // Ignore outside request context
+  }
+
+  const connectionString = customUri || process.env.MONGODB_URI || '';
+
   const mcpToolset = new MCPToolset(
     {
       type: 'StdioConnectionParams',
@@ -367,7 +378,7 @@ export async function createMcpExplorerAgent(): Promise<{
         args: ['-y', 'mongodb-mcp-server'],
         env: {
           ...process.env,
-          MDB_MCP_CONNECTION_STRING: process.env.MONGODB_URI || '',
+          MDB_MCP_CONNECTION_STRING: connectionString,
         } as Record<string, string>,
       },
       timeout: 30000,
